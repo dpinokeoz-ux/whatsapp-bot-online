@@ -9,7 +9,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ------------------------------
-// Load Users
+// Users Storage
 // ------------------------------
 const usersFile = "users.json";
 let users = fs.existsSync(usersFile)
@@ -40,7 +40,7 @@ const twilioNumber = process.env.TWILIO_WHATSAPP_NUMBER;
 const adminNumber = process.env.ADMIN_NUMBER;
 
 // ------------------------------
-// AI SYSTEM (Primary + Fallback)
+// AI SYSTEM (OpenAI → Grok fallback)
 // ------------------------------
 async function getAIResponse(message) {
   try {
@@ -60,12 +60,11 @@ async function getAIResponse(message) {
         }
       }
     );
-
     console.log("✅ Using OpenAI");
     return openaiRes.data.choices[0].message.content;
 
   } catch (err) {
-    console.log("⚠️ OpenAI failed. Trying xAI...");
+    console.log("⚠️ OpenAI failed. Trying Grok...");
 
     try {
       const grokRes = await axios.post(
@@ -84,7 +83,6 @@ async function getAIResponse(message) {
           }
         }
       );
-
       console.log("✅ Using Grok (xAI)");
       return grokRes.data.choices[0].message.content;
 
@@ -100,11 +98,7 @@ async function getAIResponse(message) {
 // ------------------------------
 async function stkPush(phoneNumber, subscriptionType) {
   const amount = subscriptionType === "normal" ? 150 : 300;
-
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[^0-9]/g, "")
-    .slice(0, 14);
+  const timestamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
 
   const shortCode = process.env.MPESA_SHORTCODE;
   const passkey = process.env.MPESA_PASSKEY;
@@ -138,12 +132,11 @@ async function stkPush(phoneNumber, subscriptionType) {
         AccountReference: subscriptionType,
         TransactionDesc: `${subscriptionType} Subscription`
       },
-      {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      }
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
 
     return true;
+
   } catch (err) {
     console.error("M-Pesa Error:", err.response?.data || err.message);
     return false;
@@ -165,7 +158,6 @@ app.post("/mpesa-callback", (req, res) => {
     if (phone && accountType) {
       const key = `whatsapp:${phone}`;
       const t = today();
-
       let user = users[key] || {};
 
       if (accountType === "normal") {
@@ -182,12 +174,14 @@ app.post("/mpesa-callback", (req, res) => {
       users[key] = user;
       saveUsers();
 
+      // Notify admin
       client.messages.create({
         from: `whatsapp:${twilioNumber}`,
         to: `whatsapp:${adminNumber}`,
         body: `💰 Payment received from ${phone} - Ksh ${amount} - ${accountType}`
       });
     }
+
   } catch (err) {
     console.error("Callback Error:", err.message);
   }
@@ -198,33 +192,54 @@ app.post("/mpesa-callback", (req, res) => {
 // ------------------------------
 // WhatsApp Webhook
 // ------------------------------
-app.post("/webhook", async (req, res) => {
+app.post("/whatsapp", async (req, res) => {
   const msg = req.body.Body?.toLowerCase().trim() || "";
   const from = req.body.From;
 
   if (!users[from]) {
-    users[from] = { subscription: "free" };
+    users[from] = { subscription: "free", rulesAccepted: false };
   }
 
   let user = users[from];
+
+  // ------------------------------
+  // RULES ACCEPTANCE
+  // ------------------------------
+  if (!user.rulesAccepted) {
+    if (msg === "accept") {
+      user.rulesAccepted = true;
+      saveUsers();
+      await client.messages.create({
+        from: `whatsapp:${twilioNumber}`,
+        to: from,
+        body: "✅ Thank you! You may now use the bot. Type 'menu' to see commands."
+      });
+    } else {
+      await client.messages.create({
+        from: `whatsapp:${twilioNumber}`,
+        to: from,
+        body: "⚠️ Before using the bot, you must accept the rules. Type 'accept' to proceed."
+      });
+    }
+    return res.sendStatus(200);
+  }
 
   // 🔥 AUTO EXPIRY CHECK
   if (user.subscription === "normal" && isExpired(user.normal?.purchaseDate)) {
     user.subscription = "free";
   }
-
   if (user.subscription === "premium" && isExpired(user.premium?.purchaseDate)) {
     user.subscription = "free";
   }
 
-  let reply = "";
-
   // ------------------------------
   // Fixed Prompt Logic
   // ------------------------------
+  let reply = "";
 
   if (msg === "todays safe tips") {
     reply = "🟢 Free User: Here is today's safe tip...";
+    reply += "\n\nUpgrade to Normal or Premium for better analyzed matches.";
 
   } else if (msg === "todays paid tips") {
     if (user.subscription === "normal" || user.subscription === "premium") {
@@ -248,7 +263,11 @@ app.post("/webhook", async (req, res) => {
       ? `💳 ${type.toUpperCase()} subscription initiated. Complete payment on your phone.`
       : "Payment request failed. Try again.";
 
+  } else if (msg === "menu") {
+    reply = "📋 Commands:\n- todays safe tips (Free)\n- todays paid tips (Normal)\n- todays premium tips (Premium)\n- subscribe normal\n- subscribe premium";
+
   } else {
+    // Fallback AI response
     reply = await getAIResponse(req.body.Body);
   }
 
