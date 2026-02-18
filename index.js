@@ -40,6 +40,42 @@ const twilioNumber = process.env.TWILIO_WHATSAPP_NUMBER;
 const adminNumber = process.env.ADMIN_NUMBER;
 
 // ------------------------------
+// Dummy Matches Data
+// ------------------------------
+// In production, you can later replace with real AI-generated tips
+const matches = [
+  { game: "Football", match: "Team A vs Team B", market: "DC1X", odds: 1.3 },
+  { game: "Football", match: "Team C vs Team D", market: "Over 1.5", odds: 1.4 },
+  { game: "Hockey", match: "Team E vs Team F", market: "Straight Win", odds: 1.2 },
+  { game: "Rugby", match: "Team G vs Team H", market: "DCX2", odds: 1.25 },
+  { game: "Football", match: "Team I vs Team J", market: "DC12", odds: 1.3 },
+];
+
+// ------------------------------
+// Betting Slip Generator
+// ------------------------------
+function generateSlip(userType) {
+  let slip = [];
+  const shuffled = [...matches].sort(() => 0.5 - Math.random());
+
+  if (userType === "free") {
+    slip = shuffled.slice(0, Math.min(3, shuffled.length));
+  } else if (userType === "normal") {
+    slip = shuffled.slice(0, 4); // 4-fold ultra safe
+  } else if (userType === "premium") {
+    // 2-3 slips each 3-4 matches
+    const numSlips = Math.floor(Math.random() * 2) + 2; // 2 or 3 slips
+    let premiumSlips = [];
+    for (let i = 0; i < numSlips; i++) {
+      const start = i * 2;
+      premiumSlips.push(shuffled.slice(start, start + 3));
+    }
+    return premiumSlips;
+  }
+  return [slip]; // wrap in array for consistent format
+}
+
+// ------------------------------
 // AI SYSTEM (OpenAI → Grok fallback)
 // ------------------------------
 async function getAIResponse(message) {
@@ -168,7 +204,7 @@ app.post("/mpesa-callback", (req, res) => {
       if (accountType === "premium") {
         user.subscription = "premium";
         user.premium = { purchaseDate: t };
-        user.normal = { purchaseDate: t }; // Premium includes normal
+        user.normal = { purchaseDate: t }; // premium includes normal
       }
 
       users[key] = user;
@@ -233,24 +269,43 @@ app.post("/whatsapp", async (req, res) => {
   }
 
   // ------------------------------
-  // Fixed Prompt Logic
+  // Fixed Prompt Logic with Betting Slips
   // ------------------------------
   let reply = "";
 
   if (msg === "todays safe tips") {
-    reply = "🟢 Free User: Here is today's safe tip...";
-    reply += "\n\nUpgrade to Normal or Premium for better analyzed matches.";
+    const slips = generateSlip("free")[0];
+    reply = "🟢 Free User: Today's Safe Tips:\n";
+    slips.forEach((m, i) => {
+      reply += `${i + 1}. [${m.game}] ${m.match} → ${m.market} @ ${m.odds}\n`;
+    });
+    reply += "\nUpgrade to Normal or Premium for more secure and analyzed matches!";
 
   } else if (msg === "todays paid tips") {
     if (user.subscription === "normal" || user.subscription === "premium") {
-      reply = "🟡 Normal Paid Tips: Here is today's paid slip...";
+      const slips = generateSlip("normal")[0];
+      reply = "🟡 Normal Paid Slip (Ultra Safe):\n";
+      slips.forEach((m, i) => {
+        reply += `${i + 1}. [${m.game}] ${m.match} → ${m.market}\n`;
+      });
+      if (user.subscription === "normal") {
+        reply += "\nUpgrade to Premium for 2-3 slips/day with more bulletproof matches!";
+      }
     } else {
       reply = "To access paid tips, please subscribe to Normal (Ksh 150/week).";
     }
 
   } else if (msg === "todays premium tips") {
     if (user.subscription === "premium") {
-      reply = "🔵 Premium Tips: Here are today's premium slips...";
+      const slips = generateSlip("premium");
+      reply = "🔵 Premium Tips:\n";
+      slips.forEach((slip, idx) => {
+        reply += `Slip ${idx + 1}:\n`;
+        slip.forEach((m, i) => {
+          reply += `${i + 1}. [${m.game}] ${m.match} → ${m.market} @ ${m.odds}\n`;
+        });
+        reply += "\n";
+      });
     } else {
       reply = "Premium tips require Premium subscription (Ksh 300/week).";
     }
@@ -265,7 +320,6 @@ app.post("/whatsapp", async (req, res) => {
 
   } else if (msg === "menu") {
     reply = "📋 Commands:\n- todays safe tips (Free)\n- todays paid tips (Normal)\n- todays premium tips (Premium)\n- subscribe normal\n- subscribe premium";
-
   } else {
     // Fallback AI response
     reply = await getAIResponse(req.body.Body);
