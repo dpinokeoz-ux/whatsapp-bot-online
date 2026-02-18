@@ -1,0 +1,10 @@
+{
+  "whatsapp:+254111844104": {
+    "acceptedRules": true,
+    "subscription": "free",
+    "free": {
+      "dailyRequests": 1,
+      "lastRequestDate": "2026-02-17"
+    }
+  }
+}
